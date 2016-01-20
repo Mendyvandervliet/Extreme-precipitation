@@ -1,0 +1,149 @@
+# Determine extreme wet events
+
+
+#------------------------------------------------------------------------------------
+
+#Packages needed
+library(PCICt)
+library(climdex.pcic)
+library(ggplot2)
+library(scales)
+library(base)
+library(verification)
+library(actuar)
+library(plyr)
+library(qcc)
+library(gPdtest)
+library(reshape2)
+library(quantreg)
+library(data.table)
+#------------------------------------------------------------------------------------
+
+
+# Create correct data format
+
+quantile(file_B$RH, probs=c(0.1,0.25,0.5,0.75, 0.90, 0.95, 0.99))
+#10% 25% 50% 75% 90% 95% 99% 
+#0.0 0.0 0.0 0.0 0.1 0.5 2.0 
+
+#Select wet periods, consecutive rain events with higher than 0.05 mm (10% of data is higher than 0.1)
+wp <- file_B
+wp$code <- 0
+wp$code[wp$RH >= 0.1] <- 1
+
+n <- 1
+for(i in 9:length(wp$code)){
+  if(wp$code[i-1]==0 & wp$code[i]==1)
+  {wp$code[i] <- wp$code[i]+n
+   n <- n+1
+    for(j in 1:50)
+    {
+      if(wp$code[i+j]==1)
+      {wp$code[i+j] <- wp$code[i]
+      } else
+      {i <-(i+j+1) 
+      break
+      } 
+    }
+  }
+}
+
+
+}
+
+# What do we want to know:
+# 1)  Increase/decrease in number of wet events; so how many unequal nr?
+# 2)  Increase or decrease in duration of event; so how many equal nr, each event.
+
+# Yearly basis
+# Difference between summer / winter in number of events and duration
+# Daily basis
+
+# Fraction 
+# 1) fraction rain a day
+# 2) fraction rain a year
+
+# Difference between summer / winter in fraction
+# 
+
+
+# Investigate nr of events
+
+
+# Investigation duration
+DT[ , `:=`( COUNT = .N , IDX = 1:.N ) , data = wp, by = code~Year]
+
+# 
+wp.rle <- rle(wp$code)
+# get the length of each consecutive 1's (cl= consecutive length)
+cl <- wp.rle$lengths[wp.rle$values == 1]
+# using lengths, construct a `factor` with levels = length(cl)
+levl  <- factor(rep(seq_along(cl), cl))
+# use these levels to extract `rain[code == 1]` and compute sum
+sumevents <- tapply(wp$RH[wp$code == 1], levl, sum)
+
+
+
+yr <- wp$YYYYMMDD[wp$code == 1]
+hh <- wp$HH[wp$code == 1]
+# dataframe with year and hour of wet hours
+wh <- data.frame(yr, hh)
+
+# Starting time (year and hour) of wet period
+
+Select_wetevents <- function( ,  ,) {
+  wp.rle <- rle(wp$code)
+  # get the length of each consecutive 1's (cl= consecutive length)
+  cl <- wp.rle$lengths[wp.rle$values == 1]
+  # using lengths, construct a `factor` with levels = length(cl)
+  levl  <- factor(rep(seq_along(cl), cl))
+  # use these levels to extract `rain[code == 1]` and compute sum
+  sumevents <- tapply(wp$RH[wp$code == 1], levl, sum)
+}
+
+length(wp.rle[wp.rle$values==1])
+#21507 events
+
+hh_wp <- array(0)
+yr_wp <- array(0)
+hh_wp[1] <- wh$hh[1]
+yr_wp[1] <- wh$yr[1]
+
+for(i in 2:length(wh$yr)) {
+  if(wh$yr[i] == wh$yr[i-1])            # If value is on same day as previous value
+    {if(wh$hh[i] != (wh$hh[i-1]+1))     # If hour is consecutive on previous hour
+      {hh_wp <- append(hh_wp,wh$hh[i])  # Select hr and yr of this starting hour of an event
+       yr_wp <- append(yr_wp,wh$yr[i])
+      } else 
+        {if(wh$yr[i] == (wh$yr[i-1]+1)  # If day is consective to previous day
+          & wh$hh[i-1] != 24 | wh$hh[i] != 1) # If it is not the first hour, and the last value was not last hour
+          {hh_wp <- append(hh_wp,wh$hh[i]) # select hr/yr (starttime) of event
+          yr_wp <- append(yr_wp,wh$yr[i])
+          }
+        }
+    }
+}
+
+for(i in 2:length(wh$yr)) {
+  if(wh$hh[i-1] == 24 & wh$hh[i] ==1)
+  {break;
+    } else
+      {
+      if(wh$hh[i] != (wh$hh[i-1]+1))     # If hour is not consecutive to previous hour
+      {hh_wp <- append(hh_wp,wh$hh[i])  # Select hr and yr of this starting hour of an event
+      yr_wp <- append(yr_wp,wh$yr[i])
+      }
+
+length(hh_wp)
+#50637 events
+
+
+zoom_wp <- subset(wp, YYYYMMDD == yr_wp)
+wp <- data.frame(hh_wp, yr_wp, cl, sumevents)
+names(wp) <- c("YYYYMMDD", "HH", "Duration", "RH")
+
+  
+  
+  
+  #Select wet periods, consecutive rain events with higher than 0.1 mm (10% of data is higher than 0.1)
+  
