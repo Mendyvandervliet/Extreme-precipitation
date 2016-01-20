@@ -1,0 +1,672 @@
+
+##Starting phase: plotting of Bilt values of
+#1.   a) absolute hourly value of extreme event (> 2 mm/hr)
+#     b) "....." (> 5 mm/hr)
+#     c) "....." (> 10 mm/hr)
+#Note: On all T range 2-12 mm defines 95 quantile in LM09
+
+#2.   max hourly value of extreme event (>= 2 mm/hr, >= 5 mm/hr, >= 10 mm/hr)
+#3.   Occurrence of extreem wet event; 1 a-c, 2
+#4.   Quantile regression all events, wet events, summer/winter
+#5.   Relation to temperature, Td, CAPE (quantiles)
+#6.   Repeat 1-4 for Norway, Spain, Poland, Germany
+#7.   Hirlam model
+#------------------------------------------------------------------------------------
+
+#Packages needed
+library(PCICt)
+library(climdex.pcic)
+library(ggplot2)
+library(scales)
+library(base)
+library(verification)
+library(actuar)
+library(plyr)
+library(qcc)
+library(gPdtest)
+library(reshape2)
+library(quantreg)
+library(data.table)
+#------------------------------------------------------------------------------------
+
+
+# Create correct data format and units
+ifile_Bilt <- read.table('./Data/KNMI_20151108_hourly_260_DeBilt_1957.txt',sep=",")
+names(ifile_Bilt) <- c("STN", "YYYYMMDD", "HH", "DD", "FH", "FX", "T", "TD", "DR", "RH", "U")
+file_B <- ifile_Bilt
+a_B<-as.PCICt(strptime(ifile_Bilt$YYYYMMDD,"%Y%m%d"),cal="gregorian")
+time_B <- as.POSIXlt(a_B)
+file_B$Date <- as.Date(time_B)
+# all hours 1-9 change  01, 02 etc.
+# and then paste without 0
+file_B$date <- as.POSIXct(paste(file_B$Date,paste(0,file_B$HH, sep="")), format="%Y-%m- %d %H")
+file_B$Date <- as.POSIXlt(file_B$Date)
+
+file_B$RH <- file_B$RH * 0.1
+file_B$T <- file_B$T * 0.1
+file_B$RH[file_B$RH == -0.1] <- 0.0
+#Get days
+file_B$Day <- format(file_B$Date,format="%d")
+#  Get months
+file_B$Month <- months(file_B$Date)
+file_B$month <- file_B$date$mon+1
+#  Get years
+file_B$Year <- format(file_B$Date,format="%Y")
+file_B$Year <- as.integer(file_B$Year)
+#yearly mean
+y_mean_B <- aggregate( file_B$RH ~ Year, file_B, mean)
+
+names(y_mean_B) <- c("")
+#montly mean
+m_mean_B <- aggregate( file_B$RH ~ Month + Year, file_B, mean )
+#daily mean
+d_mean_B <- aggregate( file_B$RH ~ Day + month + Year, file_B, mean )
+d_mean_B$YYYYMMDD <- aggregate(y_mean_B ~ Year, y_mean_B ~ Month,y_mean_B ~ Day, )
+
+#d_B<-as.PCICt(strptime(d_mean_B$Date,"%Y%m%d"),cal="gregorian")
+#t_B <- as.POSIXlt(d_B)
+#d_mean_B$date <- t_B
+#d_mean_B$date <- as.Date(with(d_mean_B, paste(Day, month, Year)), "%d%m%Y")
+
+#------------------------------------------------------------------------------------
+
+## Handy plot functions to make code more efficient
+
+# Function for multiple plots on one page (from R Cookbook)
+fun.plot <- function(..., plotlist=NULL, cols) 
+{
+  require(grid)
+  
+  plots <- c(list(...), plotlist)
+  numPlots = length(plots)
+  plotCols = cols                          
+  plotRows = ceiling(numPlots/plotCols)
+  
+  grid.newpage()
+  pushViewport(viewport(layout = grid.layout(plotRows, plotCols)))
+  vplayout <- function(x, y)
+    viewport(layout.pos.row = x, layout.pos.col = y)
+  
+  for (i in 1:numPlots) 
+  {
+    curRow = ceiling(i/plotCols)
+    curCol = (i-1) %% plotCols + 1
+    print(plots[[i]], vp = vplayout(curRow, curCol ))
+  }
+}
+
+# Plotting function to create intensity plots (exceedence over thresholds)
+
+Intensity_plotting <- function(data, title, y1)
+{y2 = y1+2
+ggplot(data, aes(x = Year, y = RH)) +        # data
+  geom_point(shape=20, colour="darkorchid") +   # marker shape and colour
+  #geom_smooth(method = "loess", se = FALSE) +  
+  geom_smooth(method = "lm",
+              level=0.90,               # confidence level
+              fill="gray30"             # colour for the confidence interval
+  ) +   
+  ggtitle(title) + # title
+  ylim(y1,y2) +
+  xlab("Time") + ylab("Precipitation (mm)")   # x and y-axis label
+}
+
+# Plotting function to create Frequency plots (exceedence over thresholds)
+
+Freqplotting<- function(data, title, cl=0.90) 
+{Freq <- count(data, vars=c("Year"))
+output <- ggplot(Freq, aes(x = Year , y = freq )) +        # data
+  geom_point(shape=20, colour="darkorchid") +   # marker shape and colour
+  #geom_smooth(method = "loess", se = FALSE) +  
+  geom_smooth(method = "lm",
+              level=cl,               # confidence level
+              fill="gray30"             # colour for the confidence interval
+  ) +   
+  ggtitle(title) + # title
+  xlab("Time") + ylab("Frequency")   # x and y-axis label
+}
+
+Freqhistplot<- function(data, title,cl=0.90) 
+{Freq <- count(data, vars=c("Year"))
+ggplot(Freq, aes(x = Year , y = freq )) +        # data
+  geom_bar(stat="identity") +   # marker shape and colour
+  geom_smooth(method = "lm",
+              level=cl,               # confidence level
+              fill="gray30"             # colour for the confidence interval
+  ) +   
+  ggtitle(title) + # title
+  xlab("Time") + ylab("Frequency")   # x and y-axis label
+}
+
+Freqplotting_all<- function(func,a1,a2,b1,b2,c1,c2,d1,d2,e1,e2,f1,f2)
+{fun.plot(func(a1,a2), func(b1,b2), func(c1,c2),
+          func(d1,d2), func(e1,e2), func(f1,f2), cols=2)
+}
+
+
+Plotting_all<- function(filename,func, a1,a2, a3, b1,b2, b3, c1,c2, c3, d1,d2, d3, e1,e2, e3, f1,f2, f3, cl,cols)
+{mypath <- file.path("C:","Users", "hp", "Google Drive", "MPOC", "Master thesis", "R projecten", 
+                     "KNMIdataloading_hourly_1957", "Figures", paste(filename,".png", sep = ""))
+png(file=mypath)
+fun.plot(func(a1,a2, a3), func(b1,b2, b3), func(c1,c2, c3),
+    func(d1,d2, d3), func(e1,e2, e3), func(f1,f2, f3), cols=cols)
+dev.off()
+}
+
+Plot_save <- function(func, data, geom1, geom2=NULL, filename, cols=2)
+{if(is.null(geom2))
+  geom2=geom1
+mypath <- file.path("C:","Users", "hp", "Google Drive", "MPOC", "Master thesis", "R projecten", 
+                    "KNMIdataloading_hourly_1957", "Figures", paste(filename,".png", sep = ""))
+png(file=mypath)
+fun.plot(func(data, geom1), func(data, geom2), cols=1)
+dev.off()
+}
+
+#------------------------------------------------------------------------------------
+
+
+
+# Selection criteria
+
+
+#Select all variables with highest 5% RH of all data
+Break_95 <- quantile(file_B$RH, probs = 0.95)
+Break_99 <- quantile(file_B$RH, probs = 0.99)
+Break_99.9 <- quantile(file_B$RH, probs = 0.999)
+data_B <- subset(file_B, RH >= Break_95)
+
+#Select all variables with highest 5% RH of wet data
+data_rain_B <- subset(file_B, RH > 0)
+Break_95_r <- quantile(data_rain_B$RH, probs = 0.95)
+Break_99_r <- quantile(data_rain_B$RH, probs = 0.99)
+Break_99.9_r <- quantile(data_rain_B$RH, probs = 0.999)
+data_w_B <- subset(data_rain_B, RH >= Break_95_w)
+length(subset(data_rain_B, RH > Break_99.9)
+#All : 95% - 0.5 mm/hr, 99% 2 mm/hr, 99.9% 5.7 mm/hr
+#Wet: 95% -2.7 mm/hr, 99% 5.3 mm/hr, 99.9% 13 mm/hr
+
+
+#Select data with threshold of 1mm, 2 mm, 5mm and 10 mm
+data_1mm_B <- subset(file_B, RH > 1)
+data_2mm_B <- subset(file_B, RH > 2)
+data_3mm_B <- subset(file_B, RH > 3)
+data_3.5mm_B <- subset(file_B, RH > 3.5)
+data_5mm_B <- subset(file_B, RH > 5)
+data_7.5mm_B <- subset(file_B, RH > 7.5)
+data_10mm_B <- subset(file_B, RH > 10)
+
+
+#------------------------------------------------------------------------------------
+
+# First time plotting absolute values with threshold indices
+
+# Spot trends
+plot(data_2mm_B$YYYYMMDD,data_2mm_B$RH)  
+plot(data_5mm_B$YYYYMMDD,data_5mm_B$RH)
+plot(data_7.5mm_B$YYYYMMDD,data_7.5mm_B$RH)
+plot(data_10mm_B$YYYYMMDD,data_10mm_B$RH)
+
+
+#Linear fits
+fit1_B <- lm(RH ~ YYYYMMDD, data = data_2mm_B)
+fit2_B <- lm(RH ~ YYYYMMDD + I(YYYYMMDD^2), data = data_2mm_B)
+fit3_B <- lm(RH ~ YYYYMMDD + I(YYYYMMDD^2) + I(YYYYMMDD^3), data = data_2mm_B)
+fit4_B <- lm(RH ~ YYYYMMDD + I(YYYYMMDD^2) + I(YYYYMMDD^3) + I(YYYYMMDD^4), data = data_2mm_B)
+
+anova(fit1_B,fit2_B,fit3_B, fit4_B)
+coef(fit1_B)
+length(data_2mm_B$YYYYMMDD)
+#Increase of RH > 2mm over 1957-2014:
+coef(fit1_B)[2] * length(data_2mm_B$YYYYMMDD) 
+# = 0.002902793  
+
+#------------------------------------------------------------------------------------
+
+
+#To distinguis between period 1957-1980, 1980-2015:
+# (because of underestimation automatic rain gauge used since 1980 more often, compared to manual)
+
+period1_B <- subset(data_B, Year > 56 & Year < 80)
+period2_B <-subset(data_B, Year > 80 | Year < 15)
+
+fit_period1_B <- lm(RH ~ YYYYMMDD, data = period1_B)
+coef(fit_period1_B)
+length(period1_B$YYYYMMDD)
+coef(fit_period1_B)[2] * length(period1_B$YYYYMMDD)
+# -0.007214981 mm between 1957-1980 ;  wet sixties
+
+fit_period2_B <- lm(RH ~ YYYYMMDD, data = period2_B)
+coef(fit_period2_B)
+length(period2_B$YYYYMMDD)
+coef(fit_period2_B)[2] * length(period2_B$YYYYMMDD)
+#0.008599218 mm between 1980-2015
+
+#To be able to exactly compare the increase between corigated and non-corrigated,
+#take time period: 1981-2004
+period3_B <-subset(data_B, Year > 81 | Year < 05)
+fit_period3_B <- lm(RH ~ YYYYMMDD, data = period3_B)
+coef(fit_period3_B)
+length(period3_B$YYYYMMDD)
+coef(fit_period3_B)[2] * length(period3_B$YYYYMMDD)
+# 0.008778686 between 1981-2004
+# Corrigated serie: 0.0024793034 mm;    so difference of 
+0.008778686 / 0.0024793034 * 100
+#= 99.99998 %, so a underestimation of
+100 - 99.99998 
+# = 354 % on the linear trend for 24 years
+#So unhomigenized serie has a linear increase which in % 
+0.0024793034 / 0.008778686 * 100  # 28% higher 
+
+# Compare to the homogenized serie of the Bilt from 1957-2004
+period4_B <-subset(data_B, Year > 56 | Year < 05)
+fit_period4_B <- lm(RH ~ YYYYMMDD, data = period4_B)
+coef(fit_period4_B)
+length(period4_B$YYYYMMDD)
+coef(fit_period4_B)[2] * length(period4_B$YYYYMMDD)
+# 0.004800334 mm increase between 1957-2004
+# Corrigated serie: 0.002785461 mm, so linear increase of unhom. serie is 
+0.002785461 / 0.004800334 * 100   # 58% higher than homogenized serie
+# STRANGE!
+
+# = 0.0002 % on the linear trend for 24 years
+#We would maybe expect no increase because of increase in underestimation error since 1980
+#Correction could give bigger increase ;
+# compare scale with The Bilt!
+
+#------------------------------------------------------------------------------------
+
+# More complex plotting, of thresholds in abs. values
+
+Plotting_all(func=Intensity_plotting, a1=data_1mm_B, a2="> 1 mm/hr", a3=1, b1=data_2mm_B, b2="> 2 mm/hr", b3=2, 
+             c1=data_3mm_B, c2="> 3 mm/hr", c3=3, d1=data_5mm_B, d2="> 5 mm/hr", d3=5,
+             e1=data_7.5mm_B, e2="> 7.5 mm/hr", e3=7.5, f1=data_10mm_B, f2="> 10 mm/hr", f3=10,cols=2)
+
+
+#------------------------------------------------------------------------------------
+
+# More complex plotting, Occurrence of extreme event (thresholds of 1-10mm)
+
+
+Freqplotting_all(Freqhistplot, a1=data_1mm_B, a2="> 1 mm/hr", b1=data_2mm_B, b2="> 2 mm/hr", 
+                 c1=data_3mm_B, c2="> 3 mm/hr", d1=data_5mm_B, d2="> 5 mm/hr",
+                 e1=data_7.5mm_B, e2="> 7.5 mm/hr", f1=data_10mm_B, f2="> 10 mm/hr")
+
+
+#------------------------------------------------------------------------------------
+
+
+
+# Difference summer / winter
+plot(data_2mm_B$month,data_2mm_B$RH)  # Shows higher summer than winter values 
+plot(data_5mm_B$month,data_5mm_B$RH)
+plot(data_10mm_B$month,data_10mm_B$RH)
+
+
+#Percentiles summer vs winter
+data_summer <- subset(file_B,month == "06" | month == "07" | month == "08" )
+data_winter <- subset(file_B, month == "12" | month == "01" | month == "02")
+Break_95_s <- quantile(data_summer$RH, probs = 0.95)
+# 0.4 mm
+Break_99_s <- quantile(data_summer$RH, probs = 0.99)
+# 2,5 mm
+Break_95_w <- quantile(data_winter$RH, probs = 0.95)
+# 0.6 mm
+Break_99_w <- quantile(data_winter$RH, probs = 0.99)
+# 1.8 mm
+
+#Select all variables with highest 5% RH of wet data
+data_rain_B_s <- subset(data_summer, RH > 0)
+Break_95_ws <- quantile(data_rain_B_s$RH, probs = 0.95)
+# 3.9 mm
+Break_99_ws <- quantile(data_rain_B_s$RH, probs = 0.99)
+# 8.6 mm
+data_rain_B_w <- subset(data_winter, RH > 0)
+Break_95_ww <- quantile(data_rain_B_w$RH, probs = 0.95)
+# 2.1 mm
+Break_99_ww <- quantile(data_rain_B_w$RH, probs = 0.99)
+# 3.6 mm
+
+
+# Trend in extreme (>1,2, 5 and 7.5 mm/hr) per season: DJF(winter) JJA(Summer)
+data_1mm_JJA_B <- subset(data_1mm_B, month == "06" | month == "07" | month == "08")
+data_1mm_DJF_B <- subset(data_1mm_B, month == "12" | month == "01" | month == "02")
+
+data_2mm_JJA_B <- subset(data_2mm_B, month == "06" | month == "07" | month == "08")
+data_2mm_DJF_B <- subset(data_2mm_B, month == "12" | month == "01" | month == "02")
+
+
+data_3mm_JJA_B <- subset(data_3mm_B, month == "06" | month == "07" | month == "08")
+data_3mm_DJF_B <- subset(data_3mm_B, month == "12" | month == "01" | month == "02")
+
+data_3.5mm_DJF_B <- subset(data_2mm_B, month == "12" | month == "01" | month == "02")
+
+data_5mm_JJA_B <- subset(data_5mm_B, month == "06" | month == "07" | month == "08")
+data_5mm_DJF_B <- subset(data_5mm_B, month == "12" | month == "01" | month == "02")
+
+data_7.5mm_JJA_B <- subset(data_7.5mm_B, month == "06" | month == "07" | month == "08")
+data_7.5mm_DJF_B <- subset(data_7.5mm_B, month == "12" | month == "01" | month == "02")
+
+data_10mm_JJA_B <- subset(data_10mm_B, month == "06" | month == "07" | month == "08")
+
+
+# Plotting intensity plots (exceedence over thresholds) for summer and winter (seperately)
+
+Plotting_all(func=Intensity_plotting, a1=data_1mm_JJA_B, a2="Summer P > 1 mm/hr", a3=1, b1=data_2mm_JJA_B, b2="Summer P > 2 mm/hr", b3=2, 
+             c1=data_3mm_JJA_B, c2="Summer P > 3 mm/hr", c3=3, d1=data_5mm_JJA_B, d2="Summer P > 5 mm/hr", d3=5,
+             e1=data_7.5mm_JJA_B, e2="Summer P > 7.5 mm/hr", e3=7.5, f1=data_10mm_JJA_B, f2="Summer P > 10 mm/hr", f3=10,cols=2)
+
+Plotting_all(func=Intensity_plotting, a1=data_1mm_DJF_B, a2="Winter P > 1 mm/hr", a3=1, b1=data_2mm_DJF_B, b2="Winter P > 2 mm/hr", b3=2, 
+             c1=data_3mm_DJF_B, c2="Winter P > 3 mm/hr", c3=3, d1=data_3.5mm_DJF_B, d2="Winter P > 3.5 mm/hr", d3=3.5,
+             e1=data_5mm_DJF_B, e2="Winter P > 5 mm/hr", e3=5, f1=data_7.5mm_DJF_B, f2="Winter P > 7.5 mm/hr", f3=7.5,cols=2)
+
+# Plotting Frequency plots (exceedence over thresholds) for summer and winter (seperately)
+
+Freqplotting_all(func=Freqhistplot, a1=data_1mm_JJA_B, a2="Summer P > 1 mm/hr", b1=data_2mm_JJA_B, b2="Summer P > 2 mm/hr", 
+             c1=data_3mm_JJA_B, c2="Summer P > 3 mm/hr", d1=data_5mm_JJA_B, d2="Summer P > 5 mm/hr",
+             e1=data_7.5mm_JJA_B, e2="Summer P > 7.5 mm/hr", f1=data_10mm_JJA_B, f2="Summer P > 10 mm/hr")
+
+Freqplotting_all(func=Freqhistplot, a1=data_1mm_DJF_B, a2="Winter P > 1 mm/hr", b1=data_2mm_DJF_B, b2="Winter P > 2 mm/hr",
+             c1=data_3mm_DJF_B, c2="Winter P > 3 mm/hr", d1=data_3.5mm_DJF_B, d2="Winter P > 3.5 mm/hr", 
+             e1=data_5mm_DJF_B, e2="Winter P > 5 mm/hr", f1=data_7.5mm_DJF_B, f2="Winter P > 7.5 mm/hr")
+
+
+#Quantile regression
+
+??quantreg
+# https://cran.r-project.org/web/packages/quantreg/vignettes/rq.pdf
+# http://www.econ.uiuc.edu/~roger/courses/RMetrics/ex.pdf
+
+rqss(formula, tau = 0.5, data = parent.frame(), weights, na.action,
+     method = "sfn", lambda = NULL, contrasts = NULL, ztol = 1e-5, control, ...)
+
+# example
+# n <- 200
+# x <- sort(rchisq(n,4))
+# z <- x + rnorm(n)
+# y <- log(x)+ .1*(log(x))^2 + log(x)*rnorm(n)/4 + z
+# plot(x, y-z)
+# f.N  <- rqss(y ~ qss(x, constraint= "N") + z)
+# f.I  <- rqss(y ~ qss(x, constraint= "I") + z)
+# f.CI <- rqss(y ~ qss(x, constraint= "CI") + z)
+# 
+# lines(x[-1], f.N $coef[1] + f.N $coef[-(1:2)])
+# lines(x[-1], f.I $coef[1] + f.I $coef[-(1:2)], col="blue")
+# lines(x[-1], f.CI$coef[1] + f.CI$coef[-(1:2)], col="red")
+example
+n <- 200
+x <- sort(rchisq(n,4))
+z <- x + rnorm(n)
+y <- log(x)+ .1*(log(x))^2 + log(x)*rnorm(n)/4 + z
+plot(x, y-z)
+f.N  <- rqss(y ~ qss(x, constraint= "N") + z)
+f.I  <- rqss(y ~ qss(x, constraint= "I") + z)
+f.CI <- rqss(y ~ qss(x, constraint= "CI") + z)
+
+lines(x[-1], f.N $coef[1] + f.N $coef[-(1:2)])
+lines(x[-1], f.I $coef[1] + f.I $coef[-(1:2)], col="blue")
+lines(x[-1], f.CI$coef[1] + f.CI$coef[-(1:2)], col="red")
+
+
+# Intensity
+
+plot(file_B$Year,file_B$RH, cex=.25,type="n", xlab="Time",
+     ylab="Precipitation (mm)")
+points(file_B$Year,file_B$RH,cex=.5,col="blue")
+abline(rq(file_B$RH~file_B$Year,tau=.5),col="red")
+
+abline(lm(file_B$RH~file_B$Year),lty=2,col="green") #the dreaded ols line
+taus <- c(.75,.90,.95)
+f <- rq(file_B$RH~file_B$Year, tau = taus)
+for( i in 1:length(taus)){
+  abline(coef(f)[,i],col="gray")
+}
+
+# Quantile regression
+
+
+plot(file_B$YYYYMMDD,file_B$RH,cex=.25,type="n",xlab="Time",
+     ylab="Precipitation (mm)", ylim=c(0,2))
+points(file_B$YYYYMMDD,file_B$RH,cex=.5,col="blue")
+abline(rq(file_B$RH~file_B$YYYYMMDD,tau=.5),col="green")
+
+
+fit <- rq(RH ~ YYYYMMDD, tau =0.5, data = file_B)
+fit2 <- rq(RH ~ YYYYMMDD, tau =0.75, data = file_B)
+fit3 <- rq(RH ~ YYYYMMDD, tau =0.90, data = file_B)
+fit4 <- rq(RH ~ YYYYMMDD, tau =0.95, data = file_B)
+
+
+# Add fit values to data table
+
+Table_95 <- data.table(fit4)
+
+B_table$tau_0.5 <- fit
+B_table$tau_0.75 <- fit2
+B_table$tau_0.90 <- fit3
+B_table$tau_0.95 <- fit4
+
+setkey(B_table, Year)
+
+# Plot mean fit per year
+
+m0.5y <- B_table[,mean(fit), by=Year]
+m0.75y <- B_table[,mean(fit2), by=Year]
+m0.90y <- B_table[,mean(fit3), by=Year]
+m0.95y <- B_table[,mean(fit4), by=Year]
+
+setkey(B_table, Day)
+# Plot mean fit per day
+
+m0.5d <- B_table[,mean(fit), by=Day]
+m0.75d <- B_table[,mean(fit2), by=Day]
+m0.90d <- B_table[,mean(fit3), by=Day]
+m0.95d <- B_table[,mean(fit4), by=Day]
+
+B_meanfit_y <- data.frame(m0.5y,m0.75y, m0.90y,m0.95y)
+B_meanfit_d <- data.frame(m0.5d,m0.75d, m0.90d,m0.95d)
+
+
+# To make fit calculation faster: RH ->  max value a day / year
+B_table <- data.table(file_B)
+max_d <- B_table[,.(Year=unique(Year), maxr=max(RH)),by=YYYYMMDD]
+#max_y <- B_table[,max(RH),by=Year]
+
+names(max_d)<- c("Day", "maxdRH")
+names(max_y)<- c("Year", "maxRH")
+
+fit <- rq(maxr ~ Year, tau =0.50, data = max_d)
+fit2 <- rq(maxr ~ Year, tau =0.75, data = max_d)
+fit3 <- rq(maxr ~ Year, tau =0.90, data = max_d)
+fit4 <- rq(maxr ~ Year, tau =0.95, data = max_d)
+fit5 <- rq(maxr ~ Year, tau =0.99, data = max_d)
+fit6 <- rq(maxr ~ Year, tau =0.999, data = max_d)
+julian()
+
+#max_d[, fitted := fit$fitted.values]
+
+
+max_d[, fitted50 := fit$fitted.values]
+max_d[, fitted75 := fit2$fitted.values]
+max_d[, fitted90 := fit3$fitted.values]
+max_d[, fitted95 := fit4$fitted.values]
+max_d[, fitted99 := fit5$fitted.values]
+max_d[, fitted99.9 := fit6$fitted.values]
+
+plot(max_d[, mean(fitted50), by = Year], col="grey")
+plot(max_d[, mean(fitted75), by = Year], col="green")
+plot(max_d[, mean(fitted90), by = Year], col="blue")
+plot(max_d[, mean(fitted95), by = Year], col="red")
+plot(max_d[, mean(fitted99), by = Year], col="purple")
+plot(max_d[, mean(fitted99.9), by = Year], col="black")
+
+max_d[, m50 := mean(fitted50), by = Year]
+max_d[, m75:= mean(fitted75), by = Year]
+max_d[, m90 := mean(fitted90), by = Year]
+max_d[, m95:= mean(fitted95), by = Year]
+max_d[, m99:= mean(fitted99), by = Year]
+max_d[, m99.9 := mean(fitted99.9), by = Year]
+
+
+ggplot(max_d, aes(x = Year, y = maxr)) +        # data
+  geom_line(aes(y=m75), col="grey") +  
+  geom_line(aes(y=m90), col="blue") + 
+  geom_line(aes(y=m95), col="green") + 
+  geom_line(aes(y=m99), col="orange") + 
+  geom_line(aes(y=m99.9), col="red") + 
+  ggtitle("Quantile regression") + # title
+  #ylim(y1,y2) +
+  xlab("Time") + ylab("Precipitation (mm)")   # x and y-axis label
+
+quantile(RH[Year > 2010], probs = 0.95, data=file_B)
+f <- c(fit, fit2, fit3, fit4)
+for( i in 1:length(4)){
+  abline(coef(f[i]),col="red")
+}
+
+# Add fit values to data table
+
+B_maxy <- data.table(fit)
+names(B_maxy) <- c("Year", "tau_0.5")
+
+plot(file_B$Year,file_B$RH, cex=.25,type="n", xlab="Time",
+     ylab="fit", ylim=c(0,0.5))
+
+f <- c(fit, fit2, fit3, fit4)
+for( i in 1:length(4)){
+  abline(coef(f[i]),col="gray")
+
+
+plot.rq.process(fit)
+
+abline(coef(fit),col="green")
+Max_y$tau_0.75 <- fit2
+B_maxy$tau_0.90 <- fit3
+B_maxy$tau_0.95 <- fit4
+
+setkey(B_table, Year)
+
+
+
+#make date with hours included
+
+abline(lm(file_B$RH~file_B$YYYYMMDD),lty=2,col="red") #the dreaded ols line
+taus <- c(0.5,.75,.90,.95)
+f <- rq(file_B$RH~file_B$YYYYMMDD, method="fn", tau = taus)
+for( i in 1:length(taus)){
+  abline(coef(f)[,i],col="gray")
+}
+# Data wet events --> data_rain_B 
+# We want number of wet events per year
+
+# library(dplyr)
+# windspeed_PR %>%
+#   group_by(STN, Year, Month) %>%
+#   summarize(n_days = n(),
+#             n_gt6 = sum(WDSP.ms > 6),
+#             p_gt6 = n_gt6 / n_days)
+
+
+
+# 
+# Freq <- count(file_B, vars=c("Year", "RH"))
+# 
+# 
+# plot(Freq$Year,Freq$freq,cex=.25,type="n",xlab="Time",
+#      ylab="Frequency")
+# points(Freq$Year,Freq$freq,cex=.5,col="blue")
+# plot(Freq$RH,Freq$freq,cex=.25,type="n",xlab="Precipitation in mm",
+#      ylab="Frequency")
+# points(Freq$RH,Freq$freq,cex=.5,col="blue")
+# 
+# abline(rq(Freq$freq~Freq$Year,tau=.5),col="blue")
+# 
+# abline(lm(Freq$freq~Freq$Year),lty=2,col="red") #the dreaded ols line
+# taus <- c(.75,.90,.95)
+# f <- rq(Freq$freq~Freq$RH+Freq$Year, tau = taus)
+# for( i in 1:length(taus)){
+#   abline(coef(f)[,i],col="gray")
+# }
+
+
+# Quantify trends
+
+#coef(lm(cbind(y, s, t) ~ x, data=x1))
+#coef(lm(RH ~ YYYYMMDD, data=data_1mm))
+
+#Frequency lm
+
+Findcoef_f <- function(data){
+Freq <- count(data, vars=c("Year"))
+coef(lm(freq ~ Year, Freq))
+}
+
+R_V <- data.frame(Findcoef_f(data_1mm_V)[2], Findcoef_f(data_2mm_V)[2], Findcoef_f(data_3mm_V)[2],
+           Findcoef_f(data_5mm_V)[2], Findcoef_f(data_7.5mm_V)[2], Findcoef_f(data_10mm_V)[2])
+R_K <- data.frame(Findcoef_f(data_1mm_K)[2], Findcoef_f(data_2mm_K)[2], Findcoef_f(data_3mm_K)[2],
+                Findcoef_f(data_5mm_K)[2], Findcoef_f(data_7.5mm_K)[2], Findcoef_f(data_10mm_K)[2])
+R_B <- data.frame(Findcoef_f(data_1mm_B)[2], Findcoef_f(data_2mm_B)[2], Findcoef_f(data_3mm_B)[2],
+                  Findcoef_f(data_5mm_B)[2], Findcoef_f(data_7.5mm_B)[2], Findcoef_f(data_10mm_B)[2])
+R_E <- data.frame(Findcoef_f(data_1mm_E)[2], Findcoef_f(data_2mm_E)[2], Findcoef_f(data_3mm_E)[2],
+                  Findcoef_f(data_5mm_E)[2], Findcoef_f(data_7.5mm_E)[2], Findcoef_f(data_10mm_E)[2])
+R_M <- data.frame(Findcoef_f(data_1mm_M)[2], Findcoef_f(data_2mm_M)[2], Findcoef_f(data_3mm_M)[2],
+                  Findcoef_f(data_5mm_M)[2], Findcoef_f(data_7.5mm_M)[2], Findcoef_f(data_10mm_M)[2])
+
+names(R_V) <- c("> 1 mm/hr", "> 2 mm/hr", "> 3 mm/hr", "> 5 mm/hr", "> 7.5 mm/hr", "> 10 mm/hr")
+names(R_K) <- c("> 1 mm/hr", "> 2 mm/hr", "> 3 mm/hr", "> 5 mm/hr", "> 7.5 mm/hr", "> 10 mm/hr")
+names(R_B) <- c("> 1 mm/hr", "> 2 mm/hr", "> 3 mm/hr", "> 5 mm/hr", "> 7.5 mm/hr", "> 10 mm/hr")
+names(R_E) <- c("> 1 mm/hr", "> 2 mm/hr", "> 3 mm/hr", "> 5 mm/hr", "> 7.5 mm/hr", "> 10 mm/hr")
+names(R_M) <- c("> 1 mm/hr", "> 2 mm/hr", "> 3 mm/hr", "> 5 mm/hr", "> 7.5 mm/hr", "> 10 mm/hr")
+
+R <- rbind(R_V,R_K, R_B, R_E, R_M)
+row.names(R) <- c("Vlissingen","Kooy", "Bilt", "Eelde", "Maastricht")
+
+# For summer trends
+
+R_Vs <- data.frame(Findcoef_f(data_1mm_JJA_V)[2], Findcoef_f(data_2mm_V)[2], Findcoef_f(data_3mm_JJA_V)[2],
+                  Findcoef_f(data_5mm_JJA_V)[2], Findcoef_f(data_7.5mm_JJA_V)[2], Findcoef_f(data_10mm_JJA_V)[2])
+R_Ks <- data.frame(Findcoef_f(data_1mm_JJA_K)[2], Findcoef_f(data_2mm_JJA_K)[2], Findcoef_f(data_3mm_JJA_K)[2],
+                  Findcoef_f(data_5mm_JJA_K)[2], Findcoef_f(data_7.5mm_JJA_K)[2], Findcoef_f(data_10mm_JJA_K)[2])
+R_Bs <- data.frame(Findcoef_f(data_1mm_JJA_B)[2], Findcoef_f(data_2mm_JJA_B)[2], Findcoef_f(data_3mm_JJA_B)[2],
+                  Findcoef_f(data_5mm_JJA_B)[2], Findcoef_f(data_7.5mm_JJA_B)[2], Findcoef_f(data_10mm_JJA_B)[2])
+R_Es <- data.frame(Findcoef_f(data_1mm_JJA_E)[2], Findcoef_f(data_2mm_JJA_E)[2], Findcoef_f(data_3mm_JJA_E)[2],
+                  Findcoef_f(data_5mm_JJA_E)[2], Findcoef_f(data_7.5mm_JJA_E)[2], Findcoef_f(data_10mm_JJA_E)[2])
+R_Ms <- data.frame(Findcoef_f(data_1mm_JJA_M)[2], Findcoef_f(data_2mm_JJA_M)[2], Findcoef_f(data_3mm_JJA_M)[2],
+                  Findcoef_f(data_5mm_JJA_M)[2], Findcoef_f(data_7.5mm_JJA_M)[2], Findcoef_f(data_10mm_JJA_M)[2])
+
+names(R_Vs) <- c("> 1 mm/hr", "> 2 mm/hr", "> 3 mm/hr", "> 5 mm/hr", "> 7.5 mm/hr", "> 10 mm/hr")
+names(R_Ks) <- c("> 1 mm/hr", "> 2 mm/hr", "> 3 mm/hr", "> 5 mm/hr", "> 7.5 mm/hr", "> 10 mm/hr")
+names(R_Bs) <- c("> 1 mm/hr", "> 2 mm/hr", "> 3 mm/hr", "> 5 mm/hr", "> 7.5 mm/hr", "> 10 mm/hr")
+names(R_Es) <- c("> 1 mm/hr", "> 2 mm/hr", "> 3 mm/hr", "> 5 mm/hr", "> 7.5 mm/hr", "> 10 mm/hr")
+names(R_Ms) <- c("> 1 mm/hr", "> 2 mm/hr", "> 3 mm/hr", "> 5 mm/hr", "> 7.5 mm/hr", "> 10 mm/hr")
+
+R_s <- rbind(R_Vs,R_Ks, R_Bs, R_Es, R_Ms)
+row.names(R_s) <- c("Vlissingen","Kooy", "Bilt", "Eelde", "Maastricht")
+
+
+
+
+# For winter trends
+
+
+R_Vw <- data.frame(Findcoef_f(data_1mm_DJF_V)[2], Findcoef_f(data_2mm_V)[2], Findcoef_f(data_3mm_DJF_V)[2],
+                   Findcoef_f(data_3.5mm_DJF_V)[2], Findcoef_f(data_5mm_DJF_V)[2], Findcoef_f(data_7.5mm_DJF_V)[2])
+R_Kw <- data.frame(Findcoef_f(data_1mm_DJF_K)[2], Findcoef_f(data_2mm_DJF_K)[2], Findcoef_f(data_3mm_DJF_K)[2],
+                   Findcoef_f(data_3.5mm_DJF_K)[2], Findcoef_f(data_5mm_DJF_K)[2], Findcoef_f(data_7.5mm_DJF_K)[2])
+R_Bw <- data.frame(Findcoef_f(data_1mm_DJF_B)[2], Findcoef_f(data_2mm_DJF_B)[2], Findcoef_f(data_3mm_DJF_B)[2],
+                   Findcoef_f(data_3.5mm_DJF_B)[2], Findcoef_f(data_5mm_DJF_B)[2], Findcoef_f(data_7.5mm_DJF_B)[2])
+R_Ew <- data.frame(Findcoef_f(data_1mm_DJF_E)[2], Findcoef_f(data_2mm_DJF_E)[2], Findcoef_f(data_3mm_DJF_E)[2],
+                   Findcoef_f(data_3.5mm_DJF_E)[2], Findcoef_f(data_5mm_DJF_E)[2], Findcoef_f(data_7.5mm_DJF_E)[2])
+R_Mw <- data.frame(Findcoef_f(data_1mm_DJF_M)[2], Findcoef_f(data_2mm_DJF_M)[2], Findcoef_f(data_3mm_DJF_M)[2],
+                   Findcoef_f(data_3.5mm_DJF_M)[2], Findcoef_f(data_5mm_DJF_M)[2], Findcoef_f(data_7.5mm_DJF_M)[2])
+
+names(R_Vw) <- c("> 1 mm/hr", "> 2 mm/hr", "> 3 mm/hr", "> 3.5 mm/hr", "> 5 mm/hr", "> 7.5 mm/hr")
+names(R_Kw) <- c("> 1 mm/hr", "> 2 mm/hr", "> 3 mm/hr", "> 3.5 mm/hr", "> 5 mm/hr", "> 7.5 mm/hr")
+names(R_Bw) <- c("> 1 mm/hr", "> 2 mm/hr", "> 3 mm/hr", "> 3.5 mm/hr", "> 5 mm/hr", "> 7.5 mm/hr")
+names(R_Ew) <- c("> 1 mm/hr", "> 2 mm/hr", "> 3 mm/hr", "> 3.5 mm/hr", "> 5 mm/hr", "> 7.5 mm/hr")
+names(R_Mw) <- c("> 1 mm/hr", "> 2 mm/hr", "> 3 mm/hr", "> 3.5 mm/hr", "> 5 mm/hr", "> 7.5 mm/hr")
+
+R_w <- rbind(R_Vw,R_Kw, R_Bw, R_Ew, R_Mw)
+row.names(R_w) <- c("Vlissingen","Kooy", "Bilt", "Eelde", "Maastricht")
+
+
