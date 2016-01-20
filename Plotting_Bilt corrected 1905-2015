@@ -1,0 +1,314 @@
+# De Bilt homogenized till 2015
+
+#Packages needed
+library(PCICt)
+library(climdex.pcic)
+library(ggplot2)
+library(scales)
+library(base)
+library(verification)
+library(actuar)
+library(plyr)
+library(qcc)
+library(gPdtest)
+library(reshape2)
+#------------------------------------------------------------------------------------
+
+
+
+# Plotting function to create Frequency plots (exceedence over thresholds)
+
+Freqplotting<- function(data, title, cl= 0.90) 
+{Freq <- count(data, vars=c("Year"))
+output <- ggplot(Freq, aes(x = Year , y = freq )) +        # data
+  geom_point(shape=20, colour="darkorchid") +   # marker shape and colour
+  #geom_smooth(method = "loess", se = FALSE) +  
+  geom_smooth(method = "lm",
+              level=cl,               # confidence level
+              fill="gray30"             # colour for the confidence interval
+  ) +   
+  ggtitle(title) + # title
+  xlab("Time") + ylab("Frequency")   # x and y-axis label
+}
+
+
+Plotting_all2<- function(func,a1,a2, a3, b1,b2, b3, c1,c2, c3, d1,d2, d3, e1,e2, e3, f1,f2, f3, cols)
+{fun.plot(func(a1,a2, a3), func(b1,b2, b3), func(c1,c2, c3),
+          func(d1,d2, d3), func(e1,e2, e3), func(f1,f2, f3), cols=cols)
+}
+
+#------------------------------------------------------------------------------------
+
+
+
+# Create correct data format and units
+ifile_Bilt2 <- read.table('./Data/KNMI_hourly_260_DeBilt_Both_1906-2015.txt',sep="", skip=1)
+names(ifile_Bilt2) <- c("STN", "YYYYMMDD", "HHHH", "RH", "p_corrected_and_detrended")
+file_B2 <- ifile_Bilt2
+a_B2<-as.PCICt(strptime(ifile_Bilt2$YYYYMMDD,"%Y%m%d"),cal="gregorian")
+time_B2 <- as.POSIXlt(a_B2)
+file_B2$Date <- as.Date(time_B2)
+file_B2$Date <- as.POSIXlt(file_B2$Date)
+#Get days
+file_B2$Day <- format(file_B2$Date,format="%d")
+#  Get months
+file_B2$Month <- months(file_B2$Date)
+file_B2$month <- file_B2$Date$mon+1
+#  Get years
+file_B2$Year <- format(file_B2$Date,format="%Y")
+file_B2$Year <- as.integer(file_B2$Year)
+#yearly mean
+y_mean_B2 <- aggregate( file_B2$RH ~ Year, file_B2, mean)
+#names(y_mean_B2) <- c("")
+
+#montly mean
+m_mean_B2 <- aggregate( file_B2$RH ~ Month + Year, file_B2, mean )
+#daily mean
+d_mean_B2 <- aggregate( file_B2$RH ~ Day + month + Year, file_B2, mean )
+d_mean_B2$YYYYMMDD <- aggregate(y_mean_B2 ~ Year, y_mean_B2 ~ Month,y_mean_B2 ~ Day, )
+
+#------------------------------------------------------------------------------------
+
+
+#Select all variables with highest 5% RH of all data
+Break_95 <- quantile(file_B2$RH, probs = 0.95)
+Break_99 <- quantile(file_B2$RH, probs = 0.99)
+Break_99.9 <- quantile(file_B2$RH, probs = 0.999)
+data_B2 <- subset(file_B2, RH >= Break_95)
+
+#Select all variables with highest 5% RH of wet data
+data_rain_B2 <- subset(file_B2, RH > 0)
+Break_95_r <- quantile(data_rain_B2$RH, probs = 0.95)
+Break_99_r <- quantile(data_rain_B2$RH, probs = 0.99)
+Break_99.9_r <- quantile(data_rain_B2$RH, probs = 0.999)
+data_w_B2 <- subset(data_rain_B2, RH >= Break_95_w)
+length(subset(data_rain_B2, RH > Break_99.9))
+
+#All : 95% - 0.505 mm/hr, 99% 2.0176 mm/hr, 99.9% 5.6 mm/hr
+#Wet: 95% -2.4 mm/hr, 99% 4.8464 mm/hr, 99.9% 12.28453 mm/hr
+
+
+#Select data with threshold of 1mm, 2 mm, 5mm and 10 mm
+data_1mm_B2 <- subset(file_B2, RH > 1)
+data_2mm_B2 <- subset(file_B2, RH > 2)
+data_3mm_B2 <- subset(file_B2, RH > 3)
+data_3.5mm_B2 <- subset(file_B2, RH > 3.5)
+data_5mm_B2 <- subset(file_B2, RH > 5)
+data_7.5mm_B2 <- subset(file_B2, RH > 7.5)
+data_10mm_B2 <- subset(file_B2, RH > 10)
+
+
+#------------------------------------------------------------------------------------
+
+Plotting_all(func=Intensity_plotting, a1=data_1mm_B2, a2="> 1 mm/hr", a3=1, b1=data_2mm_B2, b2="> 2 mm/hr", b3=2, 
+             c1=data_3mm_B2, c2="> 3 mm/hr", c3=3, d1=data_5mm_B2, d2="> 5 mm/hr", d3=5,
+             e1=data_7.5mm_B2, e2="> 7.5 mm/hr", e3=7.5, f1=data_10mm_B2, f2="> 10 mm/hr", f3=10,cols=2)
+
+
+#------------------------------------------------------------------------------------
+
+# More complex plotting, Occurrence of extreme event (thresholds of 1-10mm)
+
+
+Freqplotting_all(Freqplotting,a1=data_1mm_B2, a2="> 1 mm/hr", b1=data_2mm_B2, b2="> 2 mm/hr", 
+                 c1=data_3mm_B2, c2="> 3 mm/hr", d1=data_5mm_B2, d2="> 5 mm/hr",
+                 e1=data_7.5mm_B2, e2="> 7.5 mm/hr", f1=data_10mm_B2, f2="> 10 mm/hr")
+
+Freqplotting_all(Freqhistplot, a1=data_1mm_B2, a2="> 1 mm/hr", b1=data_2mm_B2, b2="> 2 mm/hr", 
+                 c1=data_3mm_B2, c2="> 3 mm/hr", d1=data_5mm_B2, d2="> 5 mm/hr",
+                 e1=data_7.5mm_B2, e2="> 7.5 mm/hr", f1=data_10mm_B2, f2="> 10 mm/hr")
+
+
+#------------------------------------------------------------------------------------
+
+# SUMMER VS WINTER
+
+
+# Difference summer / winter
+plot(data_2mm_B2$month,data_2mm_B2$RH)  # Shows higher summer than winter values 
+plot(data_5mm_B2$month,data_5mm_B2$RH)
+plot(data_10mm_B2$month,data_10mm_B2$RH)
+
+
+#Percentiles summer vs winter
+data_summer_B2_B2 <- subset(file_B2,month == 6 | month == 7 | month == 8 )
+data_winter_B2_B2 <- subset(file_B2, month == 12 | month == 1 | month == 2)
+Break_95_s <- quantile(data_summer_B2$RH, probs = 0.95)
+# 0.4119 mm
+Break_99_s <- quantile(data_summer_B2$RH, probs = 0.99)
+# 2.5 mm
+Break_95_w <- quantile(data_winter_B2$RH, probs = 0.95)
+# 0.6 mm
+Break_99_w <- quantile(data_winter_B2$RH, probs = 0.99)
+# 1.8 mm
+
+#Select all variables with highest 5% RH of wet data
+data_rain_B2_s <- subset(data_summer_B2, RH > 0)
+Break_95_ws <- quantile(data_rain_B2_s$RH, probs = 0.95)
+# 3.6 mm
+Break_99_ws <- quantile(data_rain_B2_s$RH, probs = 0.99)
+# 8.00916 mm
+data_rain_B2_w <- subset(data_winter_B2, RH > 0)
+Break_95_ww <- quantile(data_rain_B2_w$RH, probs = 0.95)
+# 1.92209 mm
+Break_99_ww <- quantile(data_rain_B2_w$RH, probs = 0.99)
+# 3.3 mm
+
+
+# Trend in extreme (>1,2, 5 and 7.5 mm/hr) per season: DJF(winter) JJA(Summer)
+data_1mm_JJA_B2 <- subset(data_1mm_B2, month == 6 | month == 7 | month == 8)
+data_1mm_DJF_B2 <- subset(data_1mm_B2, month == 12 | month == 1 | month == 2)
+
+data_2mm_JJA_B2 <- subset(data_2mm_B2, month == 6 | month == 7 | month == 8)
+data_2mm_DJF_B2 <- subset(data_2mm_B2, month == 12 | month == 1 | month == 2)
+
+
+data_3mm_JJA_B2 <- subset(data_3mm_B2, month == 6 | month == 7 | month == 8)
+data_3mm_DJF_B2 <- subset(data_3mm_B2, month == 12 | month == 1 | month == 2)
+
+data_3.5mm_DJF_B2 <- subset(data_2mm_B2, month == 12 | month == 1 | month == 2)
+
+data_5mm_JJA_B2 <- subset(data_5mm_B2, month == 6 | month == 7 | month == 8)
+data_5mm_DJF_B2 <- subset(data_5mm_B2, month == 12 | month == 1 | month == 2)
+
+data_7.5mm_JJA_B2 <- subset(data_7.5mm_B2, month == 6 | month == 7 | month == 8)
+data_7.5mm_DJF_B2 <- subset(data_7.5mm_B2, month == 12 | month == 1 | month == 2)
+
+data_10mm_JJA_B2 <- subset(data_10mm_B2, month == 6 | month == 7 | month == 8)
+
+
+# Plotting intensity plots (exceedence over thresholds) for summer and winter (seperately)
+
+Plotting_all(func=Intensity_plotting, a1=data_1mm_JJA_B2, a2="Summer P > 1 mm/hr", a3=1, b1=data_2mm_JJA_B2, b2="Summer P > 2 mm/hr", b3=2, 
+             c1=data_3mm_JJA_B2, c2="Summer P > 3 mm/hr", c3=3, d1=data_5mm_JJA_B2, d2="Summer P > 5 mm/hr", d3=5,
+             e1=data_7.5mm_JJA_B2, e2="Summer P > 7.5 mm/hr", e3=7.5, f1=data_10mm_JJA_B2, f2="Summer P > 10 mm/hr", f3=10,cols=2)
+
+Plotting_all(func=Intensity_plotting, a1=data_1mm_DJF_B2, a2="Winter P > 1 mm/hr", a3=1, b1=data_2mm_DJF_B2, b2="Winter P > 2 mm/hr", b3=2, 
+             c1=data_3mm_DJF_B2, c2="Winter P > 3 mm/hr", c3=3, d1=data_3.5mm_DJF_B2, d2="Winter P > 3.5 mm/hr", d3=3.5,
+             e1=data_5mm_DJF_B2, e2="Winter P > 5 mm/hr", e3=5, f1=data_7.5mm_DJF_B2, f2="Winter P > 7.5 mm/hr", f3=7.5,cols=2)
+
+#------------------------------------------------------------------------------------
+
+
+#Comparison to unhomogenized serie of the Bilt
+period_unhom_B2 <-subset(file_B, Year < 2015)
+period_hom_B2 <-subset(file_B2, Year > 1956)
+
+periods_hom_B2 <- subset(file_B, Year < 2015)
+periods_hom_B2$RH_hom <- period_hom_B2$RH
+
+
+fit_period_unhom <- lm(RH ~ YYYYMMDD, data = period_unhom_B2)
+fit_period_hom <- lm(RH ~ YYYYMMDD, data = period_hom_B2)
+coef(fit_period_unhom)
+coef(fit_period_hom)
+length(period_unhom_B2$YYYYMMDD)
+length(period_hom_B2$YYYYMMDD)
+
+#Increase of RH per 57 years
+coef(fit_period_unhom)[2] * length(period_unhom_B2$YYYYMMDD)
+# = -0.004547851
+coef(fit_period_hom)[2] * length(period_hom_B2$YYYYMMDD)
+# = 0.01483461
+
+mean(file_B$RH)
+# =0.08560027
+mean(file_B2$RH)
+# = 0.09347323
+
+# Plot differences unhom and hom
+periods_hom_B2$diff <- (periods_hom_B2$RH_hom - periods_hom_B2$RH)
+#Intensity_plotting(periods_hom_B2, "Homogenized minus unhomogenized", )
+
+# Plotting function + automatic safe
+Plotting_hom <- function(data, geom)
+{ggplot(data, aes(x = Year, y = diff)) +        # data
+  geom(shape=20, colour="darkorchid") +   # marker shape and colour
+  ggtitle("Homogenized minus unhomogenized") + # title
+  xlab("Time") + ylab("Precipitation (mm)")   # x and y-axis label
+}
+
+Plotting_hom()
+
+# Plot saving function, for 2  variables
+Plot_save_g <- function(func, data, geom1, geom2, filename, cols){
+mypath <- file.path("C:","Users", "hp", "Google Drive", "MPOC", "Master thesis", "R projecten", 
+                    "KNMIdataloading_hourly_1957", "Figures", paste(filename,".png", sep = ""))
+png(file=mypath)
+fun.plot(func(data, geom1), func(data, geom2), cols=cols)
+dev.off()
+}
+
+Plot_save_g(func=Plotting_hom,data=periods_hom_B2, geom1=geom_point,geom2=geom_line, filename="Plot_Bilt_diff", cols=1)
+
+
+ggplot(periods_hom_B2, aes(x = Year, y = diff)) +        # data
+  geom_point(shape=20, colour="darkorchid") +   # marker shape and colour
+  ggtitle("Homogenized minus unhomogenized") + # title
+  xlab("Time") + ylab("Precipitation (mm)")   # x and y-axis label
+
+
+ggplot(periods_hom_B2, aes(x = Year, y = diff)) +        # data
+  geom_line(stat="identity") +   # lines
+  ggtitle("Homogenized minus unhomogenized") + # title
+  xlab("Time") + ylab("Precipitation (mm)")   # x and y-axis label
+
+
+# Plot  differences in extremes
+
+
+#Select all variables with highest 5% RH of all data
+Break_95 <- quantile(periods_hom_B2$RH_hom, probs = 0.95)
+Break_99 <- quantile(periods_hom_B2$RH_hom, probs = 0.99)
+Break_99.9 <- quantile(periods_hom_B2$RH_hom, probs = 0.999)
+data_B2 <- subset(periods_hom_B2, RH_hom >= Break_95)
+data_B2_99 <- subset(periods_hom_B2, RH_hom >= Break_99)
+data_B2_99.9 <- subset(periods_hom_B2, RH_hom >= Break_99.9)
+
+#Select all variables with highest 5% RH of wet data
+data_rain_B2 <- subset(periods_hom_B2, RH_hom > 0)
+Break_95_r <- quantile(data_rain_B2$RH_hom, probs = 0.95)
+Break_99_r <- quantile(data_rain_B2$RH_hom, probs = 0.99)
+Break_99.9_r <- quantile(data_rain_B2$RH_hom, probs = 0.999)
+data_w_B <- subset(data_rain_B2, RH_hom >= Break_95_r)
+length(subset(periods_hom_B2, RH_hom > Break_99.9))
+#= 20
+
+#All : 95% - 0.5612 mm/hr, 99% 2.1 mm/hr, 99.9% 5.899585 mm/hr
+#Wet: 95% - 2.4 mm/hr, 99% 4.819336 mm/hr, 99.9% 12.2 mm/hr
+       
+data_B2$diff <- (data_B2$RH_hom - data_B2$RH)
+fun.plot(Plotting_hom(data_B2, geom_point), Plotting_hom(data_B2, geom_line), cols=1)
+
+
+data_B2_99$diff <- (data_B2_99$RH_hom - data_B2_99$RH)
+fun.plot(Plotting_hom(data_B2_99, geom_point), Plotting_hom(data_B2_99, geom_line), cols=1)
+
+
+data_B2_99.9$diff <- (data_B2_99.9$RH_hom - data_B2_99.9$RH)
+fun.plot(Plotting_hom(data_B2_99.9, geom_point), Plotting_hom(data_B2_99.9, geom_line), cols=1)
+
+
+# Look at difference between frequencies
+
+
+
+
+# What is significant difference?
+
+
+
+Plotting_all(func=Intensity_plotting, a1=data_1mm_B2, a2="> 1 mm/hr", a3=1, b1=data_2mm_B2, b2="> 2 mm/hr", b3=2, 
+             c1=data_3mm_B2, c2="> 3 mm/hr", c3=3, d1=data_5mm_B2, d2="> 5 mm/hr", d3=5,
+             e1=data_7.5mm_B2, e2="> 7.5 mm/hr", e3=7.5, f1=data_10mm_B2, f2="> 10 mm/hr", f3=10,cols=2)
+
+
+Freqplotting_all(Freqplotting,a1=data_1mm_B2, a2="> 1 mm/hr", b1=data_2mm_B2, b2="> 2 mm/hr", 
+                 c1=data_3mm_B2, c2="> 3 mm/hr", d1=data_5mm_B2, d2="> 5 mm/hr",
+                 e1=data_7.5mm_B2, e2="> 7.5 mm/hr", f1=data_10mm_B2, f2="> 10 mm/hr")
+
+Freqplotting_all(Freqhistplot, a1=data_1mm_B2, a2="> 1 mm/hr", b1=data_2mm_B2, b2="> 2 mm/hr", 
+                 c1=data_3mm_B2, c2="> 3 mm/hr", d1=data_5mm_B2, d2="> 5 mm/hr",
+                 e1=data_7.5mm_B2, e2="> 7.5 mm/hr", f1=data_10mm_B2, f2="> 10 mm/hr")
+
+
